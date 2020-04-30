@@ -22,8 +22,6 @@ export class AwsFargateClusterStack extends cdk.Stack {
       desiredCount: 1,
       memoryLimitMiB: 1024,
       publicLoadBalancer: true,
-      // listenerPort:
-      // taskDefinition:
       taskImageOptions: {
         image: ecs.ContainerImage.fromRegistry('jmb12686/go-loadtest-api'),
         containerPort: 8000
@@ -36,6 +34,10 @@ export class AwsFargateClusterStack extends cdk.Stack {
       targetUtilizationPercent: 50,
       scaleInCooldown: cdk.Duration.seconds(60),
       scaleOutCooldown: cdk.Duration.seconds(60)
+    });
+
+    fargateService.targetGroup.configureHealthCheck({
+      path: "/hello"
     });
 
     new cdk.CfnOutput(this, 'LoadBalancerDNS', { value: fargateService.loadBalancer.loadBalancerDnsName });
