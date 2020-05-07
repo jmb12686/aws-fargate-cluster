@@ -27,7 +27,10 @@
     "@aws-cdk/aws-certificatemanager": "^1.36.1",
     "@aws-cdk/aws-route53": "^1.36.1",
     "@aws-cdk/aws-logs": "^1.36.1",
+    "@aws-cdk/aws-servicediscovery": "^1.36.1",
     "@aws-cdk/core": "1.36.1",
+    "@aws-cdk/aws-events": "^1.36.1",
+    "@aws-cdk/custom-resources": "^1.36.1",
     "source-map-support": "^0.5.16"
   }
 }
