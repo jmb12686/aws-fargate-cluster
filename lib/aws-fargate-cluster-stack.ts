@@ -5,7 +5,7 @@ import * as ecs_patterns from "@aws-cdk/aws-ecs-patterns";
 import { SubnetType } from "@aws-cdk/aws-ec2";
 import acm = require("@aws-cdk/aws-certificatemanager");
 import r53 = require("@aws-cdk/aws-route53");
-import { CfnOutput } from "@aws-cdk/core";
+import { CfnOutput, Duration } from "@aws-cdk/core";
 import { ValidationMethod } from "@aws-cdk/aws-certificatemanager";
 import * as logs from "@aws-cdk/aws-logs";
 import { NamespaceType } from "@aws-cdk/aws-servicediscovery";
@@ -17,10 +17,29 @@ import {
   AwsCustomResourcePolicy,
 } from "@aws-cdk/custom-resources";
 import { PolicyStatement, Effect } from "@aws-cdk/aws-iam";
+import { SelfDestruct } from "./self-destruct";
 
 export class AwsFargateClusterStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    const selfDestruct = new SelfDestruct(this, "selfDestructor", {
+      timeToLive: Duration.minutes(10),
+    });
+
+    const vpc = new ec2.Vpc(this, "FargateVPC", {
+      maxAzs: 3,
+      subnetConfiguration: [
+        {
+          cidrMask: 24,
+          name: "FargatePublicSubnet",
+          subnetType: SubnetType.PUBLIC,
+        },
+      ],
+      natGateways: 0,
+    });
+
+    vpc.node.addDependency(selfDestruct);
 
     const siteDomain = "belisleonline.com";
     const dnsName = "fargate-loadtest";
@@ -37,18 +56,6 @@ export class AwsFargateClusterStack extends cdk.Stack {
     // Get the existing Route53 hosted zone that already exists
     const zone = r53.HostedZone.fromLookup(this, "MyZone", {
       domainName: siteDomain,
-    });
-
-    const vpc = new ec2.Vpc(this, "FargateVPC", {
-      maxAzs: 3,
-      subnetConfiguration: [
-        {
-          cidrMask: 24,
-          name: "FargatePublicSubnet",
-          subnetType: SubnetType.PUBLIC,
-        },
-      ],
-      natGateways: 0,
     });
 
     const cluster = new ecs.Cluster(this, "FargateCluster", {
