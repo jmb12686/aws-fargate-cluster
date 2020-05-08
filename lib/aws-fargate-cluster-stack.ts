@@ -24,7 +24,7 @@ export class AwsFargateClusterStack extends cdk.Stack {
     super(scope, id, props);
 
     const selfDestruct = new SelfDestruct(this, "selfDestructor", {
-      timeToLive: Duration.minutes(10),
+      timeToLive: Duration.minutes(60),
     });
 
     const vpc = new ec2.Vpc(this, "FargateVPC", {
@@ -172,6 +172,71 @@ export class AwsFargateClusterStack extends cdk.Stack {
     // console.log(JSON.stringify(cfnRule));
 
     //CUSTOM RESOURCE WORK TO UPDATE FARGATE CLUSTER CAPACITY PROVIDER TO SPOT!
+    const capacityProviderCustomResource = this.buildFargateSpotCapProviderCR(
+      cluster
+    );
+    const updateServiceFargateSpotCustomResource = this.updateServiceCapacityProvider(
+      cluster,
+      fargateService
+    );
+
+    // This did not work, when cluster default capacity provider is FARGATE_SPOT, new services still don't get created using the default provider.  Not supported thru CF natively
+    // fargateService.node.addDependency(capacityProviderCustomResource);
+    // scheduledFargateTask.node.addDependency(capacityProviderCustomResource);
+
+    fargateService.node.addDependency(capacityProviderCustomResource);
+    updateServiceFargateSpotCustomResource.node.addDependency(capacityProviderCustomResource);
+
+    //TODO: Also need to update the service to use defaultcapacityprovider.  May not be available in CloudFormation / CDK?
+
+    new cdk.CfnOutput(this, "LoadBalancerDNS", {
+      value: fargateService.loadBalancer.loadBalancerDnsName,
+    });
+  }
+
+  private updateServiceCapacityProvider(
+    cluster: ecs.Cluster,
+    fargateService: ecs_patterns.ApplicationLoadBalancedFargateService
+  ) {
+    const policyStatement: PolicyStatement = new PolicyStatement({
+      effect: Effect.ALLOW,
+    });
+    policyStatement.addAllResources();
+    policyStatement.addActions("*");
+    const customResourcePolicy: AwsCustomResourcePolicy = AwsCustomResourcePolicy.fromStatements(
+      [policyStatement]
+    );
+    const customResource = new AwsCustomResource(
+      this,
+      "ServiceCapacityProviderCustomResource",
+      {
+        policy: customResourcePolicy,
+        onCreate: {
+          service: "ECS",
+          action: "updateService",
+          parameters: {
+            cluster: cluster.clusterName,
+            service: fargateService.service.serviceName,
+            capacityProviderStrategy: [
+              {
+                capacityProvider: "FARGATE_SPOT",
+                base: "0",
+                weight: "1",
+              },
+            ],
+            forceNewDeployment: true,
+          },
+          physicalResourceId: {
+            id: "FargateServiceSpotCustomResource" + Date.now().toString(),
+          },
+          outputPath: 'service.capacityProviderStrategy', //Restrict the data coming back from this api call due to 4k response limit in CF custom resource
+        },
+      }
+    );
+    return customResource;
+  }
+
+  private buildFargateSpotCapProviderCR(cluster: ecs.Cluster) {
     const policyStatement: PolicyStatement = new PolicyStatement({
       effect: Effect.ALLOW,
     });
@@ -204,9 +269,6 @@ export class AwsFargateClusterStack extends cdk.Stack {
         },
       }
     );
-
-    new cdk.CfnOutput(this, "LoadBalancerDNS", {
-      value: fargateService.loadBalancer.loadBalancerDnsName,
-    });
+    return capacityProviderCustomResource;
   }
 }
