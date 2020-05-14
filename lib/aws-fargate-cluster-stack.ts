@@ -17,7 +17,7 @@ import {
   AwsCustomResourcePolicy,
 } from "@aws-cdk/custom-resources";
 import { PolicyStatement, Effect } from "@aws-cdk/aws-iam";
-import { SelfDestruct } from "./self-destruct";
+import { SelfDestruct } from "cdk-time-bomb";
 
 export class AwsFargateClusterStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
@@ -52,6 +52,9 @@ export class AwsFargateClusterStack extends cdk.Stack {
       },
       validationMethod: ValidationMethod.DNS,
     });
+    // Per issue https://github.com/aws/aws-cdk/issues/7933
+    const cfnCertificate = cert.node.defaultChild as acm.CfnCertificate;
+    cfnCertificate.domainValidationOptions = undefined;
 
     // Get the existing Route53 hosted zone that already exists
     const zone = r53.HostedZone.fromLookup(this, "MyZone", {
@@ -185,7 +188,9 @@ export class AwsFargateClusterStack extends cdk.Stack {
     // scheduledFargateTask.node.addDependency(capacityProviderCustomResource);
 
     fargateService.node.addDependency(capacityProviderCustomResource);
-    updateServiceFargateSpotCustomResource.node.addDependency(capacityProviderCustomResource);
+    updateServiceFargateSpotCustomResource.node.addDependency(
+      capacityProviderCustomResource
+    );
 
     //TODO: Also need to update the service to use defaultcapacityprovider.  May not be available in CloudFormation / CDK?
 
@@ -229,7 +234,7 @@ export class AwsFargateClusterStack extends cdk.Stack {
           physicalResourceId: {
             id: "FargateServiceSpotCustomResource" + Date.now().toString(),
           },
-          outputPath: 'service.capacityProviderStrategy', //Restrict the data coming back from this api call due to 4k response limit in CF custom resource
+          outputPath: "service.capacityProviderStrategy", //Restrict the data coming back from this api call due to 4k response limit in CF custom resource
         },
       }
     );
