@@ -52,9 +52,6 @@ export class AwsFargateClusterStack extends cdk.Stack {
       },
       validationMethod: ValidationMethod.DNS,
     });
-    // Per issue https://github.com/aws/aws-cdk/issues/7933
-    const cfnCertificate = cert.node.defaultChild as acm.CfnCertificate;
-    cfnCertificate.domainValidationOptions = undefined;
 
     // Get the existing Route53 hosted zone that already exists
     const zone = r53.HostedZone.fromLookup(this, "MyZone", {
