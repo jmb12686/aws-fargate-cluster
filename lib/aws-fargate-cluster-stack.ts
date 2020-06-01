@@ -17,7 +17,7 @@ import {
   AwsCustomResourcePolicy,
 } from "@aws-cdk/custom-resources";
 import { PolicyStatement, Effect } from "@aws-cdk/aws-iam";
-import { SelfDestruct } from "./self-destruct";
+import { SelfDestruct } from "cdk-time-bomb";
 
 export class AwsFargateClusterStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
@@ -94,7 +94,9 @@ export class AwsFargateClusterStack extends cdk.Stack {
     );
     // Force dependency ordering to provision Fargate Spot capacity provider after service is created
     fargateService.node.addDependency(capacityProviderCustomResource);
-    updateServiceFargateSpotCustomResource.node.addDependency(capacityProviderCustomResource);
+    updateServiceFargateSpotCustomResource.node.addDependency(
+      capacityProviderCustomResource
+    );
 
     new cdk.CfnOutput(this, "LoadBalancerDNS", {
       value: fargateService.loadBalancer.loadBalancerDnsName,
@@ -202,7 +204,7 @@ export class AwsFargateClusterStack extends cdk.Stack {
           physicalResourceId: {
             id: "FargateServiceSpotCustomResource" + Date.now().toString(),
           },
-          outputPath: 'service.capacityProviderStrategy', //Restrict the data coming back from this api call due to 4k response limit in CF custom resource
+          outputPath: "service.capacityProviderStrategy", //Restrict the data coming back from this api call due to 4k response limit in CF custom resource
         },
       }
     );
