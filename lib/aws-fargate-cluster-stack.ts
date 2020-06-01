@@ -24,7 +24,7 @@ export class AwsFargateClusterStack extends cdk.Stack {
     super(scope, id, props);
 
     const selfDestruct = new SelfDestruct(this, "selfDestructor", {
-      timeToLive: Duration.minutes(60),
+      timeToLive: Duration.minutes(120),
     });
 
     const vpc = new ec2.Vpc(this, "FargateVPC", {
@@ -42,7 +42,7 @@ export class AwsFargateClusterStack extends cdk.Stack {
     vpc.node.addDependency(selfDestruct);
 
     const siteDomain = "belisleonline.com";
-    const dnsName = "fargate-loadtest";
+    const dnsName = "fargate.loadtest";
 
     // Create new certificate
     const cert = new acm.Certificate(this, "FargateCertificate", {
@@ -58,10 +58,12 @@ export class AwsFargateClusterStack extends cdk.Stack {
       domainName: siteDomain,
     });
 
+    // Create Fargate Cluster
     const cluster = new ecs.Cluster(this, "FargateCluster", {
       vpc: vpc,
       clusterName: "FargateCluster",
       containerInsights: true,
+      // Enable CloudMap for container service discovery via DNS
       defaultCloudMapNamespace: {
         name: "fargate.pvt",
         type: NamespaceType.DNS_PRIVATE,
@@ -69,109 +71,20 @@ export class AwsFargateClusterStack extends cdk.Stack {
       },
     });
 
-    const fargateService = new ecs_patterns.ApplicationLoadBalancedFargateService(
-      this,
-      "FargateService",
-      {
-        cluster: cluster,
-        assignPublicIp: true,
-        cpu: 256,
-        desiredCount: 1,
-        memoryLimitMiB: 512,
-        publicLoadBalancer: true,
-        taskImageOptions: {
-          image: ecs.ContainerImage.fromRegistry("jmb12686/go-loadtest-api"),
-          containerPort: 8000,
-          logDriver: ecs.LogDrivers.awsLogs({
-            streamPrefix: "FargateLoadtest",
-            logRetention: logs.RetentionDays.TWO_MONTHS,
-          }),
-        },
-        certificate: cert,
-        domainZone: zone,
-        domainName: dnsName + "." + siteDomain,
-        cloudMapOptions: {
-          name: "loadtest",
-          failureThreshold: 1,
-        },
-      }
-    );
-
-    // Setup AutoScaling policy
-    const scaling = fargateService.service.autoScaleTaskCount({
-      maxCapacity: 3,
-    });
-    scaling.scaleOnCpuUtilization("CpuScaling", {
-      targetUtilizationPercent: 50,
-      scaleInCooldown: cdk.Duration.seconds(60),
-      scaleOutCooldown: cdk.Duration.seconds(60),
-    });
-
-    fargateService.targetGroup.configureHealthCheck({
-      path: "/hello",
-    });
+    // Create Fargate Service
+    const fargateService = this.buildAutoscalingService(cluster, cert, zone, dnsName, siteDomain);
 
     // Configure Scheduled Fargate Task
-    const scheduledFargateTask = new ecs_patterns.ScheduledFargateTask(
-      this,
-      "ScheduledFargateTask",
-      {
-        vpc: vpc,
-        cluster: cluster,
-        schedule: Schedule.rate(cdk.Duration.minutes(10)),
-        desiredTaskCount: 1,
-        subnetSelection: {
-          subnetType: SubnetType.PUBLIC,
-        },
-        scheduledFargateTaskImageOptions: {
-          image: ecs.ContainerImage.fromRegistry("curlimages/curl"),
-          command: [
-            "-L",
-            "-v",
-            "http://loadtest.fargate.pvt:8000/loadtest/iterations/10000",
-          ],
-          cpu: 256,
-          memoryLimitMiB: 512,
-          logDriver: ecs.LogDrivers.awsLogs({
-            streamPrefix: "ScheduledFargateLoadtestTask",
-            logRetention: logs.RetentionDays.TWO_MONTHS,
-          }),
-        },
-      }
-    );
+    const scheduledFargateTask = this.buildScheduledTask(vpc, cluster);
 
-    //Didn't work, didn't even create a new sec group or rule
-    // fargateService.service.connections.allowFrom(scheduledFargateTask.cluster, ec2.Port.allTcp(), "Allow All TCP traffic from fargate cluster?");
-
-    // This created a security group, and added it to allowed outbound from load balancer (i.e. inncorect)
-    // const securityGroup = new ec2.SecurityGroup(this, "AllowTrafficFromTask", {
-    //   vpc: vpc,
-    //   allowAllOutbound: true,
-    //   description: "Allow traffic from fargate task",
-    //   securityGroupName: "AllowTrafficFromFargateTask"
-    // });
-    // securityGroup.addIngressRule(ec2.Peer.ipv4(vpc.vpcCidrBlock), ec2.Port.allTcp(), "Allow all VPC traffic");
-    // fargateService.service.connections.addSecurityGroup(securityGroup);
-
-    //Attempt modifying created security group?
+    //Modify created security group to allow traffic from all of our VPC to our Fargate Service
     fargateService.service.connections.securityGroups[0].addIngressRule(
       ec2.Peer.ipv4(vpc.vpcCidrBlock),
       ec2.Port.allTcp(),
       "Allow all VPC traffic"
     );
 
-    const constructs: any[] = scheduledFargateTask.node.findAll();
-    for (let construct of constructs) {
-      console.log("construct=" + construct);
-    }
-    const cfnRule = scheduledFargateTask.eventRule.node.findChild(
-      "Resource"
-    ) as CfnRule;
-    console.log("scheduledEventRule = " + cfnRule);
-    // cfnRule.
-    // console.log(JSON.stringify(cfnRule));
-
-    //CUSTOM RESOURCE WORK TO UPDATE FARGATE CLUSTER CAPACITY PROVIDER TO SPOT!
+    // CUSTOM RESOURCE WORK TO UPDATE FARGATE CLUSTER CAPACITY PROVIDER TO SPOT!
     const capacityProviderCustomResource = this.buildFargateSpotCapProviderCR(
       cluster
     );
@@ -179,19 +92,79 @@ export class AwsFargateClusterStack extends cdk.Stack {
       cluster,
       fargateService
     );
-
-    // This did not work, when cluster default capacity provider is FARGATE_SPOT, new services still don't get created using the default provider.  Not supported thru CF natively
-    // fargateService.node.addDependency(capacityProviderCustomResource);
-    // scheduledFargateTask.node.addDependency(capacityProviderCustomResource);
-
+    // Force dependency ordering to provision Fargate Spot capacity provider after service is created
     fargateService.node.addDependency(capacityProviderCustomResource);
     updateServiceFargateSpotCustomResource.node.addDependency(capacityProviderCustomResource);
-
-    //TODO: Also need to update the service to use defaultcapacityprovider.  May not be available in CloudFormation / CDK?
 
     new cdk.CfnOutput(this, "LoadBalancerDNS", {
       value: fargateService.loadBalancer.loadBalancerDnsName,
     });
+  }
+
+  private buildScheduledTask(vpc: ec2.Vpc, cluster: ecs.Cluster) {
+    return new ecs_patterns.ScheduledFargateTask(this, "ScheduledFargateTask", {
+      vpc: vpc,
+      cluster: cluster,
+      schedule: Schedule.rate(cdk.Duration.minutes(10)),
+      desiredTaskCount: 1,
+      subnetSelection: {
+        subnetType: SubnetType.PUBLIC,
+      },
+      scheduledFargateTaskImageOptions: {
+        image: ecs.ContainerImage.fromRegistry("curlimages/curl"),
+        command: [
+          "-L",
+          "-v",
+          "http://loadtest.fargate.pvt:8000/loadtest/iterations/10000",
+        ],
+        cpu: 256,
+        memoryLimitMiB: 512,
+        logDriver: ecs.LogDrivers.awsLogs({
+          streamPrefix: "ScheduledFargateLoadtestTask",
+          logRetention: logs.RetentionDays.TWO_MONTHS,
+        }),
+      },
+    });
+  }
+
+  private buildAutoscalingService(cluster: ecs.Cluster, cert: acm.Certificate, zone: r53.IHostedZone, dnsName: string, siteDomain: string) {
+    const fargateService = new ecs_patterns.ApplicationLoadBalancedFargateService(this, "FargateService", {
+      cluster: cluster,
+      assignPublicIp: true,
+      cpu: 256,
+      desiredCount: 1,
+      memoryLimitMiB: 512,
+      publicLoadBalancer: true,
+      taskImageOptions: {
+        image: ecs.ContainerImage.fromRegistry("jmb12686/go-loadtest-api"),
+        containerPort: 8000,
+        logDriver: ecs.LogDrivers.awsLogs({
+          streamPrefix: "FargateLoadtest",
+          logRetention: logs.RetentionDays.TWO_MONTHS,
+        }),
+      },
+      certificate: cert,
+      domainZone: zone,
+      domainName: dnsName + "." + siteDomain,
+      // Add DNS name to AWS Cloud Map for container service discovery
+      cloudMapOptions: {
+        name: "loadtest",
+        failureThreshold: 1,
+      },
+    });
+    // Setup AutoScaling policy
+    const scaling = fargateService.service.autoScaleTaskCount({
+      maxCapacity: 6,
+    });
+    scaling.scaleOnCpuUtilization("CpuScaling", {
+      targetUtilizationPercent: 50,
+      scaleInCooldown: cdk.Duration.seconds(60),
+      scaleOutCooldown: cdk.Duration.seconds(60),
+    });
+    fargateService.targetGroup.configureHealthCheck({
+      path: "/hello",
+    });
+    return fargateService;
   }
 
   private updateServiceCapacityProvider(
